@@ -102,7 +102,7 @@ export function ProfileForm() {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !profile) return;
+    if (!user) return;
 
     const trimmedName = fullName.trim();
     if (!trimmedName) {
@@ -117,7 +117,8 @@ export function ProfileForm() {
 
     setSaving(true);
     try {
-      let nextAvatarUrl: string | null = profile.avatar_url ?? null;
+      const currentProfileEmail = profile?.email ?? user.email ?? trimmedEmail;
+      let nextAvatarUrl: string | null = profile?.avatar_url ?? null;
 
       // Upload a newly-staged image, if any.
       if (pendingAvatar) {
@@ -142,14 +143,28 @@ export function ProfileForm() {
         nextAvatarUrl = null;
       }
 
-      // Persist name + avatar to profiles.
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
+      // Keep auth metadata in sync so the header/sidebar fallback can
+      // still show the image immediately after a reload.
+      const { error: metadataError } = await supabase.auth.updateUser({
+        data: {
           full_name: trimmedName,
           avatar_url: nextAvatarUrl,
-        })
-        .eq('user_id', user.id);
+        },
+      });
+      if (metadataError) {
+        console.warn('Profile metadata sync failed:', metadataError.message);
+      }
+
+      // Persist name + avatar to profiles, creating the row if needed.
+      const { error: updateError } = await supabase.from('profiles').upsert(
+        {
+          user_id: user.id,
+          full_name: trimmedName,
+          email: currentProfileEmail,
+          avatar_url: nextAvatarUrl,
+        },
+        { onConflict: 'user_id' },
+      );
       if (updateError) {
         throw new Error(`Save failed: ${updateError.message}`);
       }
@@ -160,7 +175,7 @@ export function ProfileForm() {
       // after the user clicks the link (handled by the handle_new_user
       // trigger pattern in production deployments).
       let emailSent = false;
-      if (trimmedEmail.toLowerCase() !== profile.email.toLowerCase()) {
+      if (trimmedEmail.toLowerCase() !== currentProfileEmail.toLowerCase()) {
         const { error: emailError } = await supabase.auth.updateUser({
           email: trimmedEmail,
         });
@@ -195,11 +210,10 @@ export function ProfileForm() {
   };
 
   const dirty =
-    !!profile &&
-    (fullName.trim() !== (profile.full_name ?? '') ||
-      email.trim().toLowerCase() !== (profile.email ?? '').toLowerCase() ||
-      pendingAvatar !== null ||
-      removeAvatar);
+    fullName.trim() !== (profile?.full_name ?? '') ||
+    email.trim().toLowerCase() !== (profile?.email ?? '').toLowerCase() ||
+    pendingAvatar !== null ||
+    removeAvatar;
 
   const joined = user?.created_at
     ? new Date(user.created_at).toLocaleDateString(undefined, {
@@ -341,7 +355,7 @@ export function ProfileForm() {
           )}
 
           <div className="flex justify-end">
-            <Button type="submit" disabled={saving || !dirty || !profile}>
+            <Button type="submit" disabled={saving || !dirty}>
               {saving ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
